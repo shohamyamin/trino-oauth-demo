@@ -17,9 +17,120 @@ app.use(cors({
 app.use(express.json());
 app.use(morgan('dev'));
 
+// OAuth2 provider configurations
+const getOAuthProviderConfig = (provider) => {
+  const configs = {
+    google: {
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      clientId: process.env.OAUTH2_CLIENT_ID,
+      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
+    },
+    github: {
+      tokenUrl: 'https://github.com/login/oauth/access_token',
+      clientId: process.env.OAUTH2_CLIENT_ID,
+      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
+    },
+    auth0: {
+      tokenUrl: `https://${process.env.AUTH0_DOMAIN}/oauth/token`,
+      clientId: process.env.OAUTH2_CLIENT_ID,
+      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
+    },
+    keycloak: {
+      tokenUrl: `${process.env.KEYCLOAK_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/token`,
+      clientId: process.env.OAUTH2_CLIENT_ID,
+      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
+    },
+  };
+
+  return configs[provider] || configs.google;
+};
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Backend is running' });
+});
+
+// OAuth2 token exchange endpoint (Authorization Code Flow with PKCE)
+app.post('/api/oauth/token', async (req, res) => {
+  try {
+    const { code, codeVerifier, redirectUri, provider = 'google' } = req.body;
+
+    if (!code) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'Authorization code is required',
+      });
+    }
+
+    console.log('🔄 Exchanging authorization code for tokens...');
+    console.log('Provider:', provider);
+
+    const providerConfig = getOAuthProviderConfig(provider);
+
+    // Prepare token exchange request
+    const tokenParams = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: code,
+      redirect_uri: redirectUri,
+      client_id: providerConfig.clientId,
+    });
+
+    // Add PKCE code verifier if provided
+    if (codeVerifier) {
+      tokenParams.append('code_verifier', codeVerifier);
+      console.log('✅ Using PKCE code verifier');
+    }
+
+    // For confidential clients (when client secret is available and explicitly set)
+    // Note: With PKCE, client secret is NOT required for public clients (SPAs)
+    // Only include client_secret if it's explicitly configured and not a placeholder
+    if (providerConfig.clientSecret && 
+        providerConfig.clientSecret !== 'not-needed-for-pkce' &&
+        providerConfig.clientSecret.trim() !== '') {
+      tokenParams.append('client_secret', providerConfig.clientSecret);
+      console.log('✅ Using client secret for confidential client');
+    } else {
+      console.log('ℹ️ Using PKCE without client secret (public client mode)');
+    }
+
+    // Exchange code for tokens
+    const tokenResponse = await fetch(providerConfig.tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json',
+      },
+      body: tokenParams.toString(),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error('❌ Token exchange failed:', errorText);
+      return res.status(tokenResponse.status).json({
+        error: 'Token Exchange Failed',
+        message: 'Failed to exchange authorization code for tokens',
+        details: errorText,
+      });
+    }
+
+    const tokens = await tokenResponse.json();
+    console.log('✅ Token exchange successful');
+
+    // Return tokens to frontend
+    res.json({
+      access_token: tokens.access_token,
+      id_token: tokens.id_token,
+      token_type: tokens.token_type || 'Bearer',
+      expires_in: tokens.expires_in,
+      refresh_token: tokens.refresh_token,
+    });
+  } catch (error) {
+    console.error('❌ Error during token exchange:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: error.message || 'An error occurred during token exchange',
+    });
+  }
 });
 
 // Helper function to decode JWT (without verification - just for user extraction)

@@ -4,6 +4,7 @@ import {
   buildAuthorizationUrl,
   parseHashFragment,
   parseQueryParams,
+  exchangeCodeForTokens,
   verifyState,
   decodeJWT,
   isTokenExpired,
@@ -78,44 +79,47 @@ export const AuthProvider = ({ children }) => {
 
   const handleCallback = async () => {
     try {
-      // Try implicit flow (hash fragment)
-      let result = parseHashFragment();
+      console.log('🔄 Processing OAuth callback...');
       
-      // If no hash fragment, try authorization code flow (query params)
-      if (!result.accessToken && !result.error) {
-        result = parseQueryParams();
-        if (result.code) {
-          // For authorization code flow, we'd need to exchange the code
-          // This requires a backend endpoint
-          console.warn('Authorization code flow requires backend token exchange');
-          setError('Authorization code flow not yet implemented. Please use implicit flow.');
-          setIsLoading(false);
-          return;
-        }
-      }
-
+      // Parse query parameters (Authorization Code Flow)
+      const queryResult = parseQueryParams();
+      
       // Check for errors
-      if (result.error) {
-        throw new Error(result.errorDescription || result.error);
+      if (queryResult.error) {
+        throw new Error(queryResult.errorDescription || queryResult.error);
       }
 
-      // Verify state
-      if (result.state && !verifyState(result.state)) {
+      // Verify state parameter to prevent CSRF attacks
+      if (queryResult.state && !verifyState(queryResult.state)) {
         throw new Error('Invalid state parameter - possible CSRF attack');
       }
 
-      if (result.accessToken) {
-        console.log('✅ Received access token:', result.accessToken.substring(0, 20) + '...');
+      // Handle Authorization Code Flow
+      if (queryResult.code) {
+        console.log('✅ Received authorization code, exchanging for tokens...');
+        
+        // Exchange authorization code for tokens via backend
+        const tokenResult = await exchangeCodeForTokens(queryResult.code, config);
+        
+        if (!tokenResult.accessToken) {
+          throw new Error('No access token received from token exchange');
+        }
+
+        console.log('✅ Received access token:', tokenResult.accessToken.substring(0, 20) + '...');
         
         // Store tokens
-        sessionStorage.setItem('access_token', result.accessToken);
-        if (result.idToken) {
-          sessionStorage.setItem('id_token', result.idToken);
+        sessionStorage.setItem('access_token', tokenResult.accessToken);
+        if (tokenResult.idToken) {
+          sessionStorage.setItem('id_token', tokenResult.idToken);
           console.log('✅ Stored ID token');
+        }
+        if (tokenResult.refreshToken) {
+          sessionStorage.setItem('refresh_token', tokenResult.refreshToken);
+          console.log('✅ Stored refresh token');
         }
 
         // Decode ID token or access token to get user info
-        const tokenToDecode = result.idToken || result.accessToken;
+        const tokenToDecode = tokenResult.idToken || tokenResult.accessToken;
         const decoded = decodeJWT(tokenToDecode);
         
         console.log('🔓 Decoded token:', decoded);
@@ -133,8 +137,8 @@ export const AuthProvider = ({ children }) => {
           console.log('✅ User info set:', userInfo);
         }
 
-        setAccessToken(result.accessToken);
-        setIdToken(result.idToken);
+        setAccessToken(tokenResult.accessToken);
+        setIdToken(tokenResult.idToken);
         setIsAuthenticated(true);
         
         console.log('✅ Auth state updated, redirecting to home...');
@@ -142,10 +146,10 @@ export const AuthProvider = ({ children }) => {
         // Clean up URL and redirect to home
         window.history.replaceState({}, document.title, '/');
       } else {
-        throw new Error('No access token received');
+        throw new Error('No authorization code received');
       }
     } catch (error) {
-      console.error('Authentication error:', error);
+      console.error('❌ Authentication error:', error);
       setError(error.message);
       sessionStorage.clear();
       // Redirect back to home on error

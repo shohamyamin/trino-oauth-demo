@@ -1,4 +1,5 @@
 // OAuth2 configuration utilities
+// Using Authorization Code Flow with PKCE (best practice)
 export const getOAuthConfig = () => {
   const provider = import.meta.env.VITE_OAUTH_PROVIDER || 'google';
 
@@ -11,8 +12,8 @@ export const getOAuthConfig = () => {
       clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
       redirectUri: import.meta.env.VITE_GOOGLE_REDIRECT_URI || 'http://localhost:5173/callback',
       scope: 'openid profile email',
-      responseType: 'token id_token',
-      usePKCE: false,
+      responseType: 'code', // Authorization Code Flow
+      usePKCE: true, // Enable PKCE for public clients
     },
     github: {
       name: 'GitHub',
@@ -22,8 +23,8 @@ export const getOAuthConfig = () => {
       clientId: import.meta.env.VITE_GITHUB_CLIENT_ID,
       redirectUri: import.meta.env.VITE_GITHUB_REDIRECT_URI || 'http://localhost:5173/callback',
       scope: 'read:user user:email',
-      responseType: 'code',
-      usePKCE: false,
+      responseType: 'code', // Authorization Code Flow
+      usePKCE: true, // Enable PKCE
     },
     auth0: {
       name: 'Auth0',
@@ -33,8 +34,8 @@ export const getOAuthConfig = () => {
       clientId: import.meta.env.VITE_AUTH0_CLIENT_ID,
       redirectUri: import.meta.env.VITE_AUTH0_REDIRECT_URI || 'http://localhost:5173/callback',
       scope: 'openid profile email',
-      responseType: 'token id_token',
-      usePKCE: true,
+      responseType: 'code', // Authorization Code Flow
+      usePKCE: true, // Enable PKCE
     },
     keycloak: {
       name: 'Keycloak',
@@ -44,8 +45,8 @@ export const getOAuthConfig = () => {
       clientId: import.meta.env.VITE_KEYCLOAK_CLIENT_ID,
       redirectUri: 'http://localhost:5173/callback',
       scope: 'openid profile email',
-      responseType: 'token id_token',
-      usePKCE: true,
+      responseType: 'code', // Authorization Code Flow
+      usePKCE: true, // Enable PKCE
     },
     generic: {
       name: 'OAuth2 Provider',
@@ -55,8 +56,8 @@ export const getOAuthConfig = () => {
       clientId: import.meta.env.VITE_OAUTH_CLIENT_ID,
       redirectUri: import.meta.env.VITE_OAUTH_REDIRECT_URI || 'http://localhost:5173/callback',
       scope: import.meta.env.VITE_OAUTH_SCOPE || 'openid profile email',
-      responseType: 'token id_token',
-      usePKCE: true,
+      responseType: 'code', // Authorization Code Flow
+      usePKCE: true, // Enable PKCE
     },
   };
 
@@ -108,7 +109,8 @@ export const buildAuthorizationUrl = async (config) => {
     nonce: generateRandomString(),
   });
 
-  if (config.usePKCE) {
+  // Always use PKCE for Authorization Code Flow (best practice for public clients)
+  if (config.usePKCE && config.responseType === 'code') {
     const verifier = generateCodeVerifier();
     const challenge = await generateCodeChallenge(verifier);
     sessionStorage.setItem('code_verifier', verifier);
@@ -117,6 +119,44 @@ export const buildAuthorizationUrl = async (config) => {
   }
 
   return `${config.authorizationUrl}?${params.toString()}`;
+};
+
+// Exchange authorization code for tokens via backend
+export const exchangeCodeForTokens = async (code, config) => {
+  const codeVerifier = sessionStorage.getItem('code_verifier');
+  
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+  
+  const response = await fetch(`${backendUrl}/api/oauth/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      code,
+      codeVerifier,
+      redirectUri: config.redirectUri,
+      provider: import.meta.env.VITE_OAUTH_PROVIDER || 'google',
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || `Token exchange failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  
+  // Clean up code verifier after successful exchange
+  sessionStorage.removeItem('code_verifier');
+  
+  return {
+    accessToken: data.access_token,
+    idToken: data.id_token,
+    tokenType: data.token_type,
+    expiresIn: data.expires_in,
+    refreshToken: data.refresh_token,
+  };
 };
 
 // Parse hash fragment from redirect
