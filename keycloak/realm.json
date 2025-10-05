@@ -12,14 +12,14 @@
     {
       "clientId": "react-app-public",
       "name": "React Frontend Application",
-      "description": "Public client for React frontend OIDC authentication",
+      "description": "Public client for React frontend OIDC authentication using Authorization Code Flow with PKCE",
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
       "secret": "**********",
       "publicClient": true,
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
+      "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "authorizationServicesEnabled": false,
       "redirectUris": [

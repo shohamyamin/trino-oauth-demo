@@ -1,4 +1,8 @@
-// OAuth2 configuration utilities
+const CODE_VERIFIER_LENGTH = 128;
+const DEFAULT_RANDOM_STRING_LENGTH = 32;
+const DEFAULT_BACKEND_URL = 'http://localhost:3001';
+const DEFAULT_REDIRECT_URI = 'http://localhost:5173/callback';
+
 export const getOAuthConfig = () => {
   const provider = import.meta.env.VITE_OAUTH_PROVIDER || 'google';
 
@@ -9,10 +13,14 @@ export const getOAuthConfig = () => {
       tokenUrl: 'https://oauth2.googleapis.com/token',
       userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
       clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-      redirectUri: import.meta.env.VITE_GOOGLE_REDIRECT_URI || 'http://localhost:5173/callback',
+      redirectUri: import.meta.env.VITE_GOOGLE_REDIRECT_URI || DEFAULT_REDIRECT_URI,
       scope: 'openid profile email',
-      responseType: 'token id_token',
-      usePKCE: false,
+      responseType: 'code', // Authorization Code Flow
+      usePKCE: true, // Enable PKCE for public clients
+      additionalParams: {
+        access_type: 'offline', // Request refresh token from Google
+        prompt: 'consent', // Force consent screen to get refresh token
+      },
     },
     github: {
       name: 'GitHub',
@@ -22,8 +30,8 @@ export const getOAuthConfig = () => {
       clientId: import.meta.env.VITE_GITHUB_CLIENT_ID,
       redirectUri: import.meta.env.VITE_GITHUB_REDIRECT_URI || 'http://localhost:5173/callback',
       scope: 'read:user user:email',
-      responseType: 'code',
-      usePKCE: false,
+      responseType: 'code', // Authorization Code Flow
+      usePKCE: true, // Enable PKCE
     },
     auth0: {
       name: 'Auth0',
@@ -33,8 +41,8 @@ export const getOAuthConfig = () => {
       clientId: import.meta.env.VITE_AUTH0_CLIENT_ID,
       redirectUri: import.meta.env.VITE_AUTH0_REDIRECT_URI || 'http://localhost:5173/callback',
       scope: 'openid profile email',
-      responseType: 'token id_token',
-      usePKCE: true,
+      responseType: 'code', // Authorization Code Flow
+      usePKCE: true, // Enable PKCE
     },
     keycloak: {
       name: 'Keycloak',
@@ -44,8 +52,8 @@ export const getOAuthConfig = () => {
       clientId: import.meta.env.VITE_KEYCLOAK_CLIENT_ID,
       redirectUri: 'http://localhost:5173/callback',
       scope: 'openid profile email',
-      responseType: 'token id_token',
-      usePKCE: true,
+      responseType: 'code', // Authorization Code Flow
+      usePKCE: true, // Enable PKCE
     },
     generic: {
       name: 'OAuth2 Provider',
@@ -55,16 +63,15 @@ export const getOAuthConfig = () => {
       clientId: import.meta.env.VITE_OAUTH_CLIENT_ID,
       redirectUri: import.meta.env.VITE_OAUTH_REDIRECT_URI || 'http://localhost:5173/callback',
       scope: import.meta.env.VITE_OAUTH_SCOPE || 'openid profile email',
-      responseType: 'token id_token',
-      usePKCE: true,
+      responseType: 'code', // Authorization Code Flow
+      usePKCE: true, // Enable PKCE
     },
   };
 
   return configs[provider] || configs.google;
 };
 
-// Generate random string for state parameter
-export const generateRandomString = (length = 32) => {
+export const generateRandomString = (length = DEFAULT_RANDOM_STRING_LENGTH) => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let result = '';
   const randomValues = new Uint8Array(length);
@@ -75,12 +82,10 @@ export const generateRandomString = (length = 32) => {
   return result;
 };
 
-// Generate code verifier for PKCE
 export const generateCodeVerifier = () => {
-  return generateRandomString(128);
+  return generateRandomString(CODE_VERIFIER_LENGTH);
 };
 
-// Generate code challenge from verifier
 export const generateCodeChallenge = async (verifier) => {
   const encoder = new TextEncoder();
   const data = encoder.encode(verifier);
@@ -88,13 +93,11 @@ export const generateCodeChallenge = async (verifier) => {
   return base64UrlEncode(hash);
 };
 
-// Base64 URL encode
 const base64UrlEncode = (arrayBuffer) => {
   const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
   return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 };
 
-// Build authorization URL
 export const buildAuthorizationUrl = async (config) => {
   const state = generateRandomString();
   sessionStorage.setItem('oauth_state', state);
@@ -108,7 +111,7 @@ export const buildAuthorizationUrl = async (config) => {
     nonce: generateRandomString(),
   });
 
-  if (config.usePKCE) {
+  if (config.usePKCE && config.responseType === 'code') {
     const verifier = generateCodeVerifier();
     const challenge = await generateCodeChallenge(verifier);
     sessionStorage.setItem('code_verifier', verifier);
@@ -116,25 +119,81 @@ export const buildAuthorizationUrl = async (config) => {
     params.append('code_challenge_method', 'S256');
   }
 
+  if (config.additionalParams) {
+    Object.entries(config.additionalParams).forEach(([key, value]) => {
+      params.append(key, value);
+    });
+  }
+
   return `${config.authorizationUrl}?${params.toString()}`;
 };
 
-// Parse hash fragment from redirect
-export const parseHashFragment = () => {
-  const hash = window.location.hash.substring(1);
-  const params = new URLSearchParams(hash);
+export const exchangeCodeForTokens = async (code, config) => {
+  const codeVerifier = sessionStorage.getItem('code_verifier');
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || DEFAULT_BACKEND_URL;
+  
+  const response = await fetch(`${backendUrl}/api/oauth/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      code,
+      codeVerifier,
+      redirectUri: config.redirectUri,
+      provider: import.meta.env.VITE_OAUTH_PROVIDER || 'google',
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || `Token exchange failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  
+  sessionStorage.removeItem('code_verifier');
+  
   return {
-    accessToken: params.get('access_token'),
-    idToken: params.get('id_token'),
-    tokenType: params.get('token_type'),
-    expiresIn: params.get('expires_in'),
-    state: params.get('state'),
-    error: params.get('error'),
-    errorDescription: params.get('error_description'),
+    accessToken: data.access_token,
+    idToken: data.id_token,
+    tokenType: data.token_type,
+    expiresIn: data.expires_in,
+    refreshToken: data.refresh_token,
   };
 };
 
-// Parse query params from redirect (for authorization code flow)
+export const refreshAccessToken = async (refreshToken) => {
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || DEFAULT_BACKEND_URL;
+  const provider = import.meta.env.VITE_OAUTH_PROVIDER || 'google';
+  
+  const response = await fetch(`${backendUrl}/api/oauth/refresh`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      refreshToken,
+      provider,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || `Token refresh failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  
+  return {
+    accessToken: data.access_token,
+    idToken: data.id_token,
+    tokenType: data.token_type,
+    expiresIn: data.expires_in,
+    refreshToken: data.refresh_token || refreshToken,
+  };
+};
+
 export const parseQueryParams = () => {
   const params = new URLSearchParams(window.location.search);
   return {
@@ -145,13 +204,11 @@ export const parseQueryParams = () => {
   };
 };
 
-// Verify state parameter
 export const verifyState = (receivedState) => {
   const savedState = sessionStorage.getItem('oauth_state');
   return savedState === receivedState;
 };
 
-// Decode JWT token (without verification - server should verify)
 export const decodeJWT = (token) => {
   try {
     const parts = token.split('.');
@@ -164,35 +221,18 @@ export const decodeJWT = (token) => {
   }
 };
 
-// Check if token is expired
 export const isTokenExpired = (token) => {
-  if (!token) {
-    console.log('isTokenExpired: No token provided');
-    return true;
-  }
+  if (!token) return true;
 
-  // Check if it's a JWT (has 3 parts separated by dots)
   const parts = token.split('.');
   if (parts.length !== 3) {
-    console.log('isTokenExpired: Not a JWT token (parts:', parts.length, ')');
-    // Not a JWT - assume it's an opaque token that's valid
-    // OAuth2 access tokens don't have to be JWTs
     return false;
   }
 
   const decoded = decodeJWT(token);
-  if (!decoded) {
-    console.warn('isTokenExpired: Failed to decode JWT');
-    return true;
-  }
-
-  if (!decoded.exp) {
-    console.log('isTokenExpired: No exp claim, assuming valid');
-    // No expiration claim - assume valid
+  if (!decoded || !decoded.exp) {
     return false;
   }
 
-  const expired = Date.now() >= decoded.exp * 1000;
-  console.log('isTokenExpired:', expired, '(exp:', new Date(decoded.exp * 1000).toISOString(), ')');
-  return expired;
+  return Date.now() >= decoded.exp * 1000;
 };

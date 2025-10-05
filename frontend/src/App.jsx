@@ -10,26 +10,25 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  console.log('App render:', { isLoading, isAuthenticated, user });
+  const MAX_QUERY_LENGTH = 10000;
 
   const executeQuery = async () => {
-    console.log('🚀 Execute query called');
-    console.log('Auth state:', { isAuthenticated, hasUser: !!user, hasAccessToken: !!accessToken });
-    
-    // Get token - prefer ID token for user info, fallback to access token
     const token = getToken();
-    // Try to get ID token from sessionStorage as it contains user claims
     const idTokenFromStorage = sessionStorage.getItem('id_token');
     const tokenToUse = idTokenFromStorage || token;
     
-    console.log('Retrieved token:', tokenToUse ? tokenToUse.substring(0, 20) + '...' : 'NULL');
-    console.log('Using ID token:', !!idTokenFromStorage);
-    
     if (!tokenToUse) {
-      const errorMsg = 'No authentication token available. Please log in again.';
-      console.error('❌', errorMsg);
-      setError(errorMsg);
-      // Don't logout automatically - let user decide
+      setError('No authentication token available. Please log in again.');
+      return;
+    }
+
+    if (!query.trim()) {
+      setError('Query cannot be empty.');
+      return;
+    }
+
+    if (query.length > MAX_QUERY_LENGTH) {
+      setError(`Query exceeds maximum length of ${MAX_QUERY_LENGTH} characters.`);
       return;
     }
 
@@ -38,7 +37,6 @@ function App() {
     setResults(null);
 
     try {
-      console.log('Executing query with token:', tokenToUse.substring(0, 20) + '...');
       const response = await axios.post(
         `${import.meta.env.VITE_BACKEND_URL}/api/query`,
         { query },
@@ -51,25 +49,15 @@ function App() {
       );
 
       setResults(response.data);
-      console.log('Query executed successfully:', response.data);
     } catch (err) {
-      console.error('Query execution error:', err);
-      
-      // Build detailed error message
       let errorMessage = 'An error occurred while executing the query';
       
       if (err.response) {
-        // Server responded with error
         errorMessage = err.response.data?.message || err.response.statusText || errorMessage;
-        console.error('Server error:', err.response.status, err.response.data);
       } else if (err.request) {
-        // Request made but no response
         errorMessage = 'Cannot connect to backend server. Is it running?';
-        console.error('No response from server:', err.request);
       } else {
-        // Error setting up request
         errorMessage = err.message;
-        console.error('Request setup error:', err.message);
       }
       
       setError(errorMessage);

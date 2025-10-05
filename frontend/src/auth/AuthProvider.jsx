@@ -2,8 +2,9 @@ import { createContext, useContext, useState, useEffect } from 'react';
 import {
   getOAuthConfig,
   buildAuthorizationUrl,
-  parseHashFragment,
   parseQueryParams,
+  exchangeCodeForTokens,
+  refreshAccessToken,
   verifyState,
   decodeJWT,
   isTokenExpired,
@@ -39,86 +40,79 @@ export const AuthProvider = ({ children }) => {
     }
   }, []);
 
-  const checkExistingAuth = () => {
+  const checkExistingAuth = async () => {
     try {
       const storedAccessToken = sessionStorage.getItem('access_token');
       const storedIdToken = sessionStorage.getItem('id_token');
+      const storedRefreshToken = sessionStorage.getItem('refresh_token');
       const storedUser = sessionStorage.getItem('user');
-
-      console.log('🔍 Checking existing auth:', {
-        hasAccessToken: !!storedAccessToken,
-        hasIdToken: !!storedIdToken,
-        hasUser: !!storedUser,
-        accessTokenPreview: storedAccessToken ? storedAccessToken.substring(0, 20) + '...' : null
-      });
 
       if (storedAccessToken) {
         const expired = isTokenExpired(storedAccessToken);
-        console.log('Token expired?', expired);
         
         if (!expired) {
           setAccessToken(storedAccessToken);
           setIdToken(storedIdToken);
           setUser(storedUser ? JSON.parse(storedUser) : null);
           setIsAuthenticated(true);
-          console.log('✅ Auth restored from storage');
+        } else if (storedRefreshToken) {
+          try {
+            const refreshedTokens = await refreshAccessToken(storedRefreshToken);
+            
+            sessionStorage.setItem('access_token', refreshedTokens.accessToken);
+            if (refreshedTokens.idToken) {
+              sessionStorage.setItem('id_token', refreshedTokens.idToken);
+            }
+            if (refreshedTokens.refreshToken) {
+              sessionStorage.setItem('refresh_token', refreshedTokens.refreshToken);
+            }
+            
+            setAccessToken(refreshedTokens.accessToken);
+            setIdToken(refreshedTokens.idToken);
+            setUser(storedUser ? JSON.parse(storedUser) : null);
+            setIsAuthenticated(true);
+          } catch (error) {
+            console.error('Failed to refresh token on startup:', error);
+            sessionStorage.clear();
+          }
         } else {
-          console.warn('⚠️ Stored token is expired');
           sessionStorage.clear();
         }
-      } else {
-        console.log('ℹ️ No stored token found');
       }
     } catch (error) {
       console.error('Error checking existing auth:', error);
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleCallback = async () => {
+  };  const handleCallback = async () => {
     try {
-      // Try implicit flow (hash fragment)
-      let result = parseHashFragment();
+      const queryResult = parseQueryParams();
       
-      // If no hash fragment, try authorization code flow (query params)
-      if (!result.accessToken && !result.error) {
-        result = parseQueryParams();
-        if (result.code) {
-          // For authorization code flow, we'd need to exchange the code
-          // This requires a backend endpoint
-          console.warn('Authorization code flow requires backend token exchange');
-          setError('Authorization code flow not yet implemented. Please use implicit flow.');
-          setIsLoading(false);
-          return;
-        }
+      if (queryResult.error) {
+        throw new Error(queryResult.errorDescription || queryResult.error);
       }
 
-      // Check for errors
-      if (result.error) {
-        throw new Error(result.errorDescription || result.error);
-      }
-
-      // Verify state
-      if (result.state && !verifyState(result.state)) {
+      if (queryResult.state && !verifyState(queryResult.state)) {
         throw new Error('Invalid state parameter - possible CSRF attack');
       }
 
-      if (result.accessToken) {
-        console.log('✅ Received access token:', result.accessToken.substring(0, 20) + '...');
+      if (queryResult.code) {
+        const tokenResult = await exchangeCodeForTokens(queryResult.code, config);
         
-        // Store tokens
-        sessionStorage.setItem('access_token', result.accessToken);
-        if (result.idToken) {
-          sessionStorage.setItem('id_token', result.idToken);
-          console.log('✅ Stored ID token');
+        if (!tokenResult.accessToken) {
+          throw new Error('No access token received from token exchange');
+        }
+        
+        sessionStorage.setItem('access_token', tokenResult.accessToken);
+        if (tokenResult.idToken) {
+          sessionStorage.setItem('id_token', tokenResult.idToken);
+        }
+        if (tokenResult.refreshToken) {
+          sessionStorage.setItem('refresh_token', tokenResult.refreshToken);
         }
 
-        // Decode ID token or access token to get user info
-        const tokenToDecode = result.idToken || result.accessToken;
+        const tokenToDecode = tokenResult.idToken || tokenResult.accessToken;
         const decoded = decodeJWT(tokenToDecode);
-        
-        console.log('🔓 Decoded token:', decoded);
         
         if (decoded) {
           const userInfo = {
@@ -130,25 +124,20 @@ export const AuthProvider = ({ children }) => {
           
           sessionStorage.setItem('user', JSON.stringify(userInfo));
           setUser(userInfo);
-          console.log('✅ User info set:', userInfo);
         }
 
-        setAccessToken(result.accessToken);
-        setIdToken(result.idToken);
+        setAccessToken(tokenResult.accessToken);
+        setIdToken(tokenResult.idToken);
         setIsAuthenticated(true);
-        
-        console.log('✅ Auth state updated, redirecting to home...');
 
-        // Clean up URL and redirect to home
         window.history.replaceState({}, document.title, '/');
       } else {
-        throw new Error('No access token received');
+        throw new Error('No authorization code received');
       }
     } catch (error) {
       console.error('Authentication error:', error);
       setError(error.message);
       sessionStorage.clear();
-      // Redirect back to home on error
       setTimeout(() => {
         window.location.href = '/';
       }, 3000);
@@ -177,25 +166,43 @@ export const AuthProvider = ({ children }) => {
     window.location.href = '/';
   };
 
-  const getToken = () => {
-    console.log('🎫 getToken called:', {
-      hasAccessToken: !!accessToken,
-      isAuthenticated,
-      tokenPreview: accessToken ? accessToken.substring(0, 20) + '...' : null
-    });
-
+  const getToken = async () => {
     if (accessToken) {
       const expired = isTokenExpired(accessToken);
-      console.log('Token expired?', expired);
       
       if (!expired) {
         return accessToken;
       }
+      
+      const storedRefreshToken = sessionStorage.getItem('refresh_token');
+      if (storedRefreshToken) {
+        try {
+          const refreshedTokens = await refreshAccessToken(storedRefreshToken);
+          
+          sessionStorage.setItem('access_token', refreshedTokens.accessToken);
+          if (refreshedTokens.idToken) {
+            sessionStorage.setItem('id_token', refreshedTokens.idToken);
+          }
+          if (refreshedTokens.refreshToken) {
+            sessionStorage.setItem('refresh_token', refreshedTokens.refreshToken);
+          }
+          
+          setAccessToken(refreshedTokens.accessToken);
+          setIdToken(refreshedTokens.idToken);
+          
+          return refreshedTokens.accessToken;
+        } catch (error) {
+          console.error('Failed to refresh token:', error);
+          sessionStorage.clear();
+          setAccessToken(null);
+          setIdToken(null);
+          setIsAuthenticated(false);
+          setError('Session expired. Please log in again.');
+          return null;
+        }
+      }
     }
     
-    // Token expired or missing - return null without logging out
-    // The UI will handle showing error messages
-    console.warn('⚠️ Access token is expired or missing');
     return null;
   };
 
