@@ -1,41 +1,26 @@
 {
   "catalogs": [
     {
-      "user": "shoham39@gmail.com",
-      "catalog": ".*",
-      "allow": "all"
-    },
-    {
       "user": ".*",
       "catalog": ".*",
-      "allow": "none"
+      "allow": "all"
     }
   ],
   "schemas": [
     {
-      "user": "shoham39@gmail.com",
+      "user": ".*",
       "schema": ".*",
       "owner": true
     }
   ],
-  "tables": [
-    {
-      "user": "shoham39@gmail.com",
-      "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]
-    }
-  ],
   "queries": [
     {
-      "user": "shoham39@gmail.com",
+      "user": ".*",
       "allow": [
         "execute",
         "kill",
         "view"
       ]
-    },
-    {
-      "user": ".*",
-      "allow": []
     }
   ]
 }
