@@ -6,18 +6,26 @@ import { Trino } from 'trino-client';
 
 dotenv.config();
 
+const requiredEnvVars = ['OAUTH2_CLIENT_ID', 'TRINO_HOST'];
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+if (missingVars.length > 0) {
+  console.error(`Missing required environment variables: ${missingVars.join(', ')}`);
+  process.exit(1);
+}
+
 const app = express();
 const PORT = process.env.PORT || 3001;
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+const TRINO_HOST = process.env.TRINO_HOST || 'trino';
+const TRINO_PORT = process.env.TRINO_PORT || '8080';
 
-// Middleware
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: FRONTEND_ORIGIN,
   credentials: true
 }));
 app.use(express.json());
 app.use(morgan('dev'));
 
-// OAuth2 provider configurations
 const getOAuthProviderConfig = (provider) => {
   const configs = {
     google: {
@@ -45,12 +53,10 @@ const getOAuthProviderConfig = (provider) => {
   return configs[provider] || configs.google;
 };
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Backend is running' });
 });
 
-// OAuth2 token exchange endpoint (Authorization Code Flow with PKCE)
 app.post('/api/oauth/token', async (req, res) => {
   try {
     const { code, codeVerifier, redirectUri, provider = 'google' } = req.body;
@@ -62,9 +68,6 @@ app.post('/api/oauth/token', async (req, res) => {
       });
     }
 
-    console.log('🔄 Exchanging authorization code for tokens...');
-    console.log('Provider:', provider);
-
     const providerConfig = getOAuthProviderConfig(provider);
 
     // Prepare token exchange request
@@ -75,25 +78,15 @@ app.post('/api/oauth/token', async (req, res) => {
       client_id: providerConfig.clientId,
     });
 
-    // Add PKCE code verifier if provided
     if (codeVerifier) {
       tokenParams.append('code_verifier', codeVerifier);
-      console.log('✅ Using PKCE code verifier');
     }
 
-    // For confidential clients (when client secret is available and explicitly set)
-    // Note: With PKCE, client secret is NOT required for public clients (SPAs)
-    // Only include client_secret if it's explicitly configured and not a placeholder
     if (providerConfig.clientSecret && 
         providerConfig.clientSecret !== 'not-needed-for-pkce' &&
         providerConfig.clientSecret.trim() !== '') {
       tokenParams.append('client_secret', providerConfig.clientSecret);
-      console.log('✅ Using client secret for confidential client');
-    } else {
-      console.log('ℹ️ Using PKCE without client secret (public client mode)');
     }
-
-    // Exchange code for tokens
     const tokenResponse = await fetch(providerConfig.tokenUrl, {
       method: 'POST',
       headers: {
@@ -105,7 +98,7 @@ app.post('/api/oauth/token', async (req, res) => {
 
     if (!tokenResponse.ok) {
       const errorText = await tokenResponse.text();
-      console.error('❌ Token exchange failed:', errorText);
+      console.error('Token exchange failed:', errorText);
       return res.status(tokenResponse.status).json({
         error: 'Token Exchange Failed',
         message: 'Failed to exchange authorization code for tokens',
@@ -114,9 +107,6 @@ app.post('/api/oauth/token', async (req, res) => {
     }
 
     const tokens = await tokenResponse.json();
-    console.log('✅ Token exchange successful');
-
-    // Return tokens to frontend
     res.json({
       access_token: tokens.access_token,
       id_token: tokens.id_token,
@@ -133,25 +123,80 @@ app.post('/api/oauth/token', async (req, res) => {
   }
 });
 
-// Helper function to decode JWT (without verification - just for user extraction)
+app.post('/api/oauth/refresh', async (req, res) => {
+  try {
+    const { refreshToken, provider = 'google' } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'Refresh token is required',
+      });
+    }
+
+    const providerConfig = getOAuthProviderConfig(provider);
+
+    // Prepare token refresh request
+    const tokenParams = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: providerConfig.clientId,
+    });
+
+    if (providerConfig.clientSecret && 
+        providerConfig.clientSecret !== 'not-needed-for-pkce' &&
+        providerConfig.clientSecret.trim() !== '') {
+      tokenParams.append('client_secret', providerConfig.clientSecret);
+    }
+    const tokenResponse = await fetch(providerConfig.tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json',
+      },
+      body: tokenParams.toString(),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error('Token refresh failed:', errorText);
+      return res.status(tokenResponse.status).json({
+        error: 'Token Refresh Failed',
+        message: 'Failed to refresh access token',
+        details: errorText,
+      });
+    }
+
+    const tokens = await tokenResponse.json();
+    res.json({
+      access_token: tokens.access_token,
+      id_token: tokens.id_token,
+      token_type: tokens.token_type || 'Bearer',
+      expires_in: tokens.expires_in,
+      refresh_token: tokens.refresh_token, // Some providers return new refresh token
+    });
+  } catch (error) {
+    console.error('❌ Error during token refresh:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: error.message || 'An error occurred during token refresh',
+    });
+  }
+});
+
 function decodeJWT(token) {
   try {
     const parts = token.split('.');
-    if (parts.length !== 3) {
-      // Not a JWT, return null
-      return null;
-    }
-    // Decode base64url (handle both standard base64 and base64url encoding)
+    if (parts.length !== 3) return null;
+    
     const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const payload = Buffer.from(base64, 'base64').toString('utf8');
     return JSON.parse(payload);
   } catch (error) {
-    console.error('Failed to decode JWT:', error.message);
     return null;
   }
 }
 
-// Query endpoint - acts as a secure proxy to Trino
 app.post('/api/query', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -163,7 +208,7 @@ app.post('/api/query', async (req, res) => {
       });
     }
 
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+    const token = authHeader.substring(7);
     const { query } = req.body;
 
     if (!query || typeof query !== 'string') {
@@ -173,32 +218,27 @@ app.post('/api/query', async (req, res) => {
       });
     }
 
-    console.log(`Executing query: ${query.substring(0, 50)}...`);
-    console.log(`Token length: ${token.length}`);
-    console.log(`Token starts with: ${token.substring(0, 100)}`);
+    if (query.length > 10000) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'Query exceeds maximum length of 10000 characters'
+      });
+    }
 
-    // Extract user from token (if JWT) or use default
     const decoded = decodeJWT(token);
     const user = decoded?.email || decoded?.sub || decoded?.preferred_username || 'oauth-user';
-    
-    console.log(`User from token: ${user}`);
-    console.log(`Decoded token:`, decoded);
-
-    // Configure Trino client with Bearer token authentication
-    // We need to send both the Bearer token (for OAuth2) and X-Trino-User header
     const client = Trino.create({
-      server: `http://${process.env.TRINO_HOST}:${process.env.TRINO_PORT}`,
+      server: `http://${TRINO_HOST}:${TRINO_PORT}`,
       catalog: process.env.TRINO_CATALOG || 'tpch',
       schema: process.env.TRINO_SCHEMA || 'sf1',
       source: 'trino-oauth-demo',
-      user: user,  // This should set X-Trino-User header
+      user: user,
       extraHeaders: {
-        'Authorization': `Bearer ${token}`,  // OAuth2 Bearer token
-        'X-Trino-User': user  // Explicitly set the user header
+        'Authorization': `Bearer ${token}`,
+        'X-Trino-User': user
       }
     });
 
-    // Execute query using async iterator
     const results = [];
     const iterator = await client.query(query);
     
@@ -207,8 +247,6 @@ app.post('/api/query', async (req, res) => {
         results.push(...queryResult.data);
       }
     }
-
-    console.log(`Query executed successfully. Rows returned: ${results.length}`);
 
     res.json({
       success: true,
@@ -219,7 +257,6 @@ app.post('/api/query', async (req, res) => {
   } catch (error) {
     console.error('Error executing query:', error);
     
-    // Handle specific error types
     if (error.message?.includes('401') || error.message?.includes('Unauthorized')) {
       return res.status(401).json({
         error: 'Authentication Failed',
@@ -246,5 +283,5 @@ app.post('/api/query', async (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Backend server is running on http://0.0.0.0:${PORT}`);
-  console.log(`Trino connection: http://${process.env.TRINO_HOST}:${process.env.TRINO_PORT}`);
+  console.log(`Trino connection: http://${TRINO_HOST}:${TRINO_PORT}`);
 });
