@@ -6,7 +6,7 @@ import { Trino } from 'trino-client';
 
 dotenv.config();
 
-const requiredEnvVars = ['OAUTH2_CLIENT_ID', 'TRINO_HOST'];
+const requiredEnvVars = ['OAUTH2_PUBLIC_CLIENT_ID', 'TRINO_HOST'];
 const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
 if (missingVars.length > 0) {
   console.error(`Missing required environment variables: ${missingVars.join(', ')}`);
@@ -26,27 +26,33 @@ app.use(cors({
 app.use(express.json());
 app.use(morgan('dev'));
 
+// Backend uses the PUBLIC client for token exchange
+// This client uses PKCE and doesn't require a client secret
 const getOAuthProviderConfig = (provider) => {
   const configs = {
     google: {
       tokenUrl: 'https://oauth2.googleapis.com/token',
-      clientId: process.env.OAUTH2_CLIENT_ID,
-      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
+      clientId: process.env.OAUTH2_PUBLIC_CLIENT_ID,
+      // Public client - no client secret needed (PKCE is used instead)
+      clientSecret: null,
     },
     github: {
       tokenUrl: 'https://github.com/login/oauth/access_token',
-      clientId: process.env.OAUTH2_CLIENT_ID,
-      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
+      clientId: process.env.OAUTH2_PUBLIC_CLIENT_ID,
+      // GitHub may still require secret even with PKCE
+      clientSecret: process.env.OAUTH2_PUBLIC_CLIENT_SECRET || null,
     },
     auth0: {
       tokenUrl: `https://${process.env.AUTH0_DOMAIN}/oauth/token`,
-      clientId: process.env.OAUTH2_CLIENT_ID,
-      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
+      clientId: process.env.OAUTH2_PUBLIC_CLIENT_ID,
+      // Public client - no client secret needed (PKCE is used instead)
+      clientSecret: null,
     },
     keycloak: {
       tokenUrl: `${process.env.KEYCLOAK_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/token`,
-      clientId: process.env.OAUTH2_CLIENT_ID,
-      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
+      clientId: process.env.OAUTH2_PUBLIC_CLIENT_ID,
+      // Public client - no client secret needed (PKCE is used instead)
+      clientSecret: null,
     },
   };
 
@@ -78,12 +84,13 @@ app.post('/api/oauth/token', async (req, res) => {
       client_id: providerConfig.clientId,
     });
 
+    // Add PKCE code verifier (required for public clients)
     if (codeVerifier) {
       tokenParams.append('code_verifier', codeVerifier);
     }
 
+    // Add client secret only if it exists (some public clients may need it)
     if (providerConfig.clientSecret && 
-        providerConfig.clientSecret !== 'not-needed-for-pkce' &&
         providerConfig.clientSecret.trim() !== '') {
       tokenParams.append('client_secret', providerConfig.clientSecret);
     }
@@ -143,8 +150,8 @@ app.post('/api/oauth/refresh', async (req, res) => {
       client_id: providerConfig.clientId,
     });
 
+    // Add client secret only if it exists (some public clients may need it)
     if (providerConfig.clientSecret && 
-        providerConfig.clientSecret !== 'not-needed-for-pkce' &&
         providerConfig.clientSecret.trim() !== '') {
       tokenParams.append('client_secret', providerConfig.clientSecret);
     }
