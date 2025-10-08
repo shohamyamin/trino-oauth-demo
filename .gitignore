@@ -1,3 +1,4 @@
 
 # Environment variables
 .env
+trino/etc/trino.jks

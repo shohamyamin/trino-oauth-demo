@@ -12,11 +12,9 @@ console.log('Environment:', {
 
 try {
   ReactDOM.createRoot(document.getElementById('root')).render(
-    <React.StrictMode>
-      <AuthProvider>
-        <App />
-      </AuthProvider>
-    </React.StrictMode>
+    <AuthProvider>
+      <App />
+    </AuthProvider>
   );
   console.log('✅ React app mounted successfully');
 } catch (error) {
