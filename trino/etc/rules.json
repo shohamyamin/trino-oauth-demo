@@ -13,6 +13,15 @@
       "owner": true
     }
   ],
+  "tables": [
+    {
+      "user": ".*",
+      "catalog": ".*",
+      "schema": ".*",
+      "table": ".*",
+      "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP"]
+    }
+  ],
   "queries": [
     {
       "user": ".*",

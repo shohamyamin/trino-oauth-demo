@@ -6,7 +6,7 @@ import { Trino } from 'trino-client';
 
 dotenv.config();
 
-const requiredEnvVars = ['OAUTH2_CLIENT_ID', 'TRINO_HOST'];
+const requiredEnvVars = ['OAUTH2_PUBLIC_CLIENT_ID', 'OAUTH2_TOKEN_URL', 'TRINO_HOST'];
 const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
 if (missingVars.length > 0) {
   console.error(`Missing required environment variables: ${missingVars.join(', ')}`);
@@ -26,31 +26,12 @@ app.use(cors({
 app.use(express.json());
 app.use(morgan('dev'));
 
-const getOAuthProviderConfig = (provider) => {
-  const configs = {
-    google: {
-      tokenUrl: 'https://oauth2.googleapis.com/token',
-      clientId: process.env.OAUTH2_CLIENT_ID,
-      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
-    },
-    github: {
-      tokenUrl: 'https://github.com/login/oauth/access_token',
-      clientId: process.env.OAUTH2_CLIENT_ID,
-      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
-    },
-    auth0: {
-      tokenUrl: `https://${process.env.AUTH0_DOMAIN}/oauth/token`,
-      clientId: process.env.OAUTH2_CLIENT_ID,
-      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
-    },
-    keycloak: {
-      tokenUrl: `${process.env.KEYCLOAK_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/token`,
-      clientId: process.env.OAUTH2_CLIENT_ID,
-      clientSecret: process.env.OAUTH2_CLIENT_SECRET,
-    },
+// OAuth configuration
+const getOAuthConfig = () => {
+  return {
+    tokenUrl: process.env.OAUTH2_TOKEN_URL,
+    clientId: process.env.OAUTH2_PUBLIC_CLIENT_ID || 'query-app',
   };
-
-  return configs[provider] || configs.google;
 };
 
 app.get('/health', (req, res) => {
@@ -59,7 +40,7 @@ app.get('/health', (req, res) => {
 
 app.post('/api/oauth/token', async (req, res) => {
   try {
-    const { code, codeVerifier, redirectUri, provider = 'google' } = req.body;
+    const { code, codeVerifier, redirectUri } = req.body;
 
     if (!code) {
       return res.status(400).json({
@@ -68,26 +49,22 @@ app.post('/api/oauth/token', async (req, res) => {
       });
     }
 
-    const providerConfig = getOAuthProviderConfig(provider);
+    const oauthConfig = getOAuthConfig();
 
     // Prepare token exchange request
     const tokenParams = new URLSearchParams({
       grant_type: 'authorization_code',
       code: code,
       redirect_uri: redirectUri,
-      client_id: providerConfig.clientId,
+      client_id: oauthConfig.clientId,
     });
 
+    // Add PKCE code verifier (required for public clients)
     if (codeVerifier) {
       tokenParams.append('code_verifier', codeVerifier);
     }
 
-    if (providerConfig.clientSecret && 
-        providerConfig.clientSecret !== 'not-needed-for-pkce' &&
-        providerConfig.clientSecret.trim() !== '') {
-      tokenParams.append('client_secret', providerConfig.clientSecret);
-    }
-    const tokenResponse = await fetch(providerConfig.tokenUrl, {
+    const tokenResponse = await fetch(oauthConfig.tokenUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -125,7 +102,7 @@ app.post('/api/oauth/token', async (req, res) => {
 
 app.post('/api/oauth/refresh', async (req, res) => {
   try {
-    const { refreshToken, provider = 'google' } = req.body;
+    const { refreshToken } = req.body;
 
     if (!refreshToken) {
       return res.status(400).json({
@@ -134,21 +111,16 @@ app.post('/api/oauth/refresh', async (req, res) => {
       });
     }
 
-    const providerConfig = getOAuthProviderConfig(provider);
+    const oauthConfig = getOAuthConfig();
 
     // Prepare token refresh request
     const tokenParams = new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
-      client_id: providerConfig.clientId,
+      client_id: oauthConfig.clientId,
     });
 
-    if (providerConfig.clientSecret && 
-        providerConfig.clientSecret !== 'not-needed-for-pkce' &&
-        providerConfig.clientSecret.trim() !== '') {
-      tokenParams.append('client_secret', providerConfig.clientSecret);
-    }
-    const tokenResponse = await fetch(providerConfig.tokenUrl, {
+    const tokenResponse = await fetch(oauthConfig.tokenUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -226,9 +198,28 @@ app.post('/api/query', async (req, res) => {
     }
 
     const decoded = decodeJWT(token);
-    const user = decoded?.email || decoded?.sub || decoded?.preferred_username || 'oauth-user';
+    console.log('📋 Decoded token claims:', JSON.stringify({
+      sub: decoded?.sub,
+      email: decoded?.email,
+      preferred_username: decoded?.preferred_username,
+      name: decoded?.name,
+      aud: decoded?.aud,
+      azp: decoded?.azp,
+      client_id: decoded?.client_id,
+      iss: decoded?.iss,
+    }, null, 2));
+    
+    // IMPORTANT: Use the same principal field as Trino's config
+    // Trino uses: http-server.authentication.oauth2.principal-field=${ENV:OAUTH2_PRINCIPAL_FIELD}
+    const principalField = process.env.OAUTH2_PRINCIPAL_FIELD || 'preferred_username';
+    const user = decoded?.[principalField] || decoded?.email || decoded?.sub || 'oauth-user';
+    
+    console.log(`👤 Principal field: ${principalField}`);
+    console.log(`👤 Extracted username: ${user}`);
+    console.log(`🔐 Token audience (aud): ${JSON.stringify(decoded?.aud)}`);
+    
     const client = Trino.create({
-      server: `http://${TRINO_HOST}:${TRINO_PORT}`,
+      server: `https://${TRINO_HOST}:${TRINO_PORT}`,
       catalog: process.env.TRINO_CATALOG || 'tpch',
       schema: process.env.TRINO_SCHEMA || 'sf1',
       source: 'trino-oauth-demo',

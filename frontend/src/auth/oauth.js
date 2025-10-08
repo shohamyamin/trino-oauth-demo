@@ -4,71 +4,15 @@ const DEFAULT_BACKEND_URL = 'http://localhost:3001';
 const DEFAULT_REDIRECT_URI = 'http://localhost:5173/callback';
 
 export const getOAuthConfig = () => {
-  const provider = import.meta.env.VITE_OAUTH_PROVIDER || 'google';
-
-  const configs = {
-    google: {
-      name: 'Google',
-      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-      tokenUrl: 'https://oauth2.googleapis.com/token',
-      userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
-      clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-      redirectUri: import.meta.env.VITE_GOOGLE_REDIRECT_URI || DEFAULT_REDIRECT_URI,
-      scope: 'openid profile email',
-      responseType: 'code', // Authorization Code Flow
-      usePKCE: true, // Enable PKCE for public clients
-      additionalParams: {
-        access_type: 'offline', // Request refresh token from Google
-        prompt: 'consent', // Force consent screen to get refresh token
-      },
-    },
-    github: {
-      name: 'GitHub',
-      authorizationUrl: 'https://github.com/login/oauth/authorize',
-      tokenUrl: 'https://github.com/login/oauth/access_token',
-      userInfoUrl: 'https://api.github.com/user',
-      clientId: import.meta.env.VITE_GITHUB_CLIENT_ID,
-      redirectUri: import.meta.env.VITE_GITHUB_REDIRECT_URI || 'http://localhost:5173/callback',
-      scope: 'read:user user:email',
-      responseType: 'code', // Authorization Code Flow
-      usePKCE: true, // Enable PKCE
-    },
-    auth0: {
-      name: 'Auth0',
-      authorizationUrl: `https://${import.meta.env.VITE_AUTH0_DOMAIN}/authorize`,
-      tokenUrl: `https://${import.meta.env.VITE_AUTH0_DOMAIN}/oauth/token`,
-      userInfoUrl: `https://${import.meta.env.VITE_AUTH0_DOMAIN}/userinfo`,
-      clientId: import.meta.env.VITE_AUTH0_CLIENT_ID,
-      redirectUri: import.meta.env.VITE_AUTH0_REDIRECT_URI || 'http://localhost:5173/callback',
-      scope: 'openid profile email',
-      responseType: 'code', // Authorization Code Flow
-      usePKCE: true, // Enable PKCE
-    },
-    keycloak: {
-      name: 'Keycloak',
-      authorizationUrl: `${import.meta.env.VITE_KEYCLOAK_URL}/realms/${import.meta.env.VITE_KEYCLOAK_REALM}/protocol/openid-connect/auth`,
-      tokenUrl: `${import.meta.env.VITE_KEYCLOAK_URL}/realms/${import.meta.env.VITE_KEYCLOAK_REALM}/protocol/openid-connect/token`,
-      userInfoUrl: `${import.meta.env.VITE_KEYCLOAK_URL}/realms/${import.meta.env.VITE_KEYCLOAK_REALM}/protocol/openid-connect/userinfo`,
-      clientId: import.meta.env.VITE_KEYCLOAK_CLIENT_ID,
-      redirectUri: 'http://localhost:5173/callback',
-      scope: 'openid profile email',
-      responseType: 'code', // Authorization Code Flow
-      usePKCE: true, // Enable PKCE
-    },
-    generic: {
-      name: 'OAuth2 Provider',
-      authorizationUrl: import.meta.env.VITE_OAUTH_AUTHORIZATION_URL,
-      tokenUrl: import.meta.env.VITE_OAUTH_TOKEN_URL,
-      userInfoUrl: import.meta.env.VITE_OAUTH_USERINFO_URL,
-      clientId: import.meta.env.VITE_OAUTH_CLIENT_ID,
-      redirectUri: import.meta.env.VITE_OAUTH_REDIRECT_URI || 'http://localhost:5173/callback',
-      scope: import.meta.env.VITE_OAUTH_SCOPE || 'openid profile email',
-      responseType: 'code', // Authorization Code Flow
-      usePKCE: true, // Enable PKCE
-    },
+  return {
+    name: 'OAuth2 Provider',
+    authorizationUrl: import.meta.env.VITE_OAUTH_AUTHORIZATION_URL,
+    clientId: import.meta.env.VITE_OAUTH_CLIENT_ID || 'query-app',
+    redirectUri: import.meta.env.VITE_OAUTH_REDIRECT_URI || DEFAULT_REDIRECT_URI,
+    scope: import.meta.env.VITE_OAUTH_SCOPE || 'openid profile email',
+    responseType: 'code', // Authorization Code Flow
+    usePKCE: true, // Enable PKCE for public clients
   };
-
-  return configs[provider] || configs.google;
 };
 
 export const generateRandomString = (length = DEFAULT_RANDOM_STRING_LENGTH) => {
@@ -119,12 +63,6 @@ export const buildAuthorizationUrl = async (config) => {
     params.append('code_challenge_method', 'S256');
   }
 
-  if (config.additionalParams) {
-    Object.entries(config.additionalParams).forEach(([key, value]) => {
-      params.append(key, value);
-    });
-  }
-
   return `${config.authorizationUrl}?${params.toString()}`;
 };
 
@@ -141,7 +79,6 @@ export const exchangeCodeForTokens = async (code, config) => {
       code,
       codeVerifier,
       redirectUri: config.redirectUri,
-      provider: import.meta.env.VITE_OAUTH_PROVIDER || 'google',
     }),
   });
 
@@ -165,7 +102,6 @@ export const exchangeCodeForTokens = async (code, config) => {
 
 export const refreshAccessToken = async (refreshToken) => {
   const backendUrl = import.meta.env.VITE_BACKEND_URL || DEFAULT_BACKEND_URL;
-  const provider = import.meta.env.VITE_OAUTH_PROVIDER || 'google';
   
   const response = await fetch(`${backendUrl}/api/oauth/refresh`, {
     method: 'POST',
@@ -174,7 +110,6 @@ export const refreshAccessToken = async (refreshToken) => {
     },
     body: JSON.stringify({
       refreshToken,
-      provider,
     }),
   });
 

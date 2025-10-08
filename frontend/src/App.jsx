@@ -13,7 +13,7 @@ function App() {
   const MAX_QUERY_LENGTH = 10000;
 
   const executeQuery = async () => {
-    const token = getToken();
+    const token = await getToken();
     const idTokenFromStorage = sessionStorage.getItem('id_token');
     const tokenToUse = idTokenFromStorage || token;
     

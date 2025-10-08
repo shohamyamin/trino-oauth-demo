@@ -31,9 +31,18 @@ export const AuthProvider = ({ children }) => {
   const config = getOAuthConfig();
 
   useEffect(() => {
+    // Prevent duplicate callback execution (important for React StrictMode)
+    const isProcessingCallback = sessionStorage.getItem('processing_callback');
+    
     // Check if we're on the callback page
     if (window.location.pathname === '/callback') {
-      handleCallback();
+      if (!isProcessingCallback) {
+        sessionStorage.setItem('processing_callback', 'true');
+        handleCallback();
+      } else {
+        // Already processing, just wait
+        setIsLoading(false);
+      }
     } else {
       // Check for existing token in sessionStorage
       checkExistingAuth();
@@ -130,6 +139,8 @@ export const AuthProvider = ({ children }) => {
         setIdToken(tokenResult.idToken);
         setIsAuthenticated(true);
 
+        // Clean up the processing flag and redirect
+        sessionStorage.removeItem('processing_callback');
         window.history.replaceState({}, document.title, '/');
       } else {
         throw new Error('No authorization code received');
@@ -137,6 +148,7 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error('Authentication error:', error);
       setError(error.message);
+      sessionStorage.removeItem('processing_callback');
       sessionStorage.clear();
       setTimeout(() => {
         window.location.href = '/';
