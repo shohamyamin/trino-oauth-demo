@@ -2,3 +2,5 @@
 # Environment variables
 .env
 trino/etc/trino.jks
+*/node_modules
+*/dist
